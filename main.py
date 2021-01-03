@@ -3,14 +3,14 @@ import numpy as np
 import tensorflow as tf
 
 from scada_forecast.preprocess import read_humidity, read_temperature, read_scada
-from scada_forecast.preprocess import merge_dataframes, add_calendar_features, prepare_data
+from scada_forecast.preprocess import get_lag_features, merge_dataframes, add_calendar_features, prepare_data
 
-from scada_forecast.model import create_model, train_model, inference
+from scada_forecast.model import train_model, inference
 
 tf.compat.v1.logging.set_verbosity(tf.compat.v1.logging.ERROR)
 
 def get_args():
-    parser = argparse.ArgumentParser('SCADA Load forecasting')
+    parser = argparse.ArgumentParser('Dự báo phụ tải SCADA trước 1 giờ')
     parser.add_argument('--task', type=str, default='train', help='train hay inference')
     parser.add_argument('--scada_path', type=str, default='data/scada/Dữ liệu SCADA Phụ tải 26.08.2020.xlsx', help='File excel scada')
     parser.add_argument('--use_humidity', action='store_true', default=False, help='Có sử dụng dữ liệu độ ẩm hay không')
@@ -19,9 +19,14 @@ def get_args():
     parser.add_argument('--temperature_path', type=str, default='data/NhietDoQuaKhu.xlsx', help='File excel nhiệt độ')
     parser.add_argument('--use_lunar', action='store_true', default=False, help='Có sử dụng các feature âm lịch hay không')
     parser.add_argument('--use_holiday', action='store_true', default=False, help='Có sử dụng các feature ngày nghỉ lễ hay không')
+    parser.add_argument('--ckpt_path', type=str, default='tmp/ckpt', help='Đường dẫn lưu model')
+    # Flag for training
     parser.add_argument('--n_val', type=int, default=100 * 24 * 12, help='Số điểm dữ liệu dùng cho tập validation (default 100 ngày)')
     parser.add_argument('--n_test', type=int, default=100 * 24 * 12, help='Số điểm dữ liệu dùng cho tập test (default 100 ngày cuối)')
-    parser.add_argument('--ckpt_path', type=str, default='tmp/ckpt', help='Đường dẫn lưu model')
+    # Flag for inference
+    parser.add_argument('--forecast_horizon', type=int, default=1, 
+                        help='Số điểm dự báo (bắt đầu từ thời điểm sau 1h đổ về trước) (default chỉ dự báo tại 1 thời điểm sau 1h)')
+    
     args = parser.parse_args()
     return args
     
@@ -44,6 +49,11 @@ def main(args):
     # TIEN XU LY
     print('Doc du lieu scada...')
     df_scada = read_scada(args.scada_path)
+    if args.task == 'train':
+        df_scada = get_lag_features(df_scada, hour_steps, clip_df=False)
+    if args.task == 'inference':
+        df_scada = get_lag_features(df_scada, hour_steps, clip_df=True, 
+                                    input_width=input_width, forecast_horizon=args.forecast_horizon)
     
     if args.use_humidity:
         print('Doc du lieu do am...')
@@ -58,7 +68,7 @@ def main(args):
     
     print('Chuan bi du lieu cho mo hinh...')
     df, features_dict, categorical_cols, numeric_cols, target_col = prepare_data(df, 
-                                                                                 hour_steps=hour_steps, 
+                                                                                 train_flag=(args.task=='train'),
                                                                                  use_temp=args.use_temperature, 
                                                                                  use_humidity=args.use_humidity, 
                                                                                  use_lunar=args.use_lunar,
@@ -80,9 +90,9 @@ def main(args):
     # DU BAO
     if args.task == 'inference':
         print('Inference...')
-        forecast_df = inference(df, input_width, args.n_test, hour_steps, args.ckpt_path,
+        forecast_df = inference(df, input_width, args.ckpt_path,
                                 dtype_dict, categorical_unique_values_dict, 
-                                chosen_features, categorical_cols, numeric_cols, target_col)
+                                chosen_features, categorical_cols, numeric_cols)
         print(forecast_df)
     
     

@@ -7,6 +7,7 @@ import holidays
 from lunarcalendar import Converter
 from tqdm.auto import tqdm # note: tqdm version >= 4.8 only
 
+
 def read_humidity(file_path):
     """
     Đọc dữ liệu độ ẩm từ file excel
@@ -74,6 +75,42 @@ def read_scada(file_path):
     df_scada = df_scada.resample('5min').mean().interpolate()
     return df_scada
 
+def get_lag_features(df, hour_steps, clip_df=False, input_width=12, forecast_horizon=1):
+    # for forecasting
+    if clip_df:
+        index = list(df.index)
+        t = index[-1]
+        for _ in range(hour_steps):
+            t += pd.Timedelta(5.0, 'm')
+            index.append(t)
+
+        df = df.reindex(index)
+        max_lag = 7 * 24 * hour_steps + hour_steps + (input_width - 1)
+        df = df.iloc[-(max_lag + forecast_horizon - 1):].copy()
+        
+    # log transform
+    df['LogLoad'] = np.log(df['Load'])
+    
+    # Lag features
+    df['Lag1h'] = df['LogLoad'].shift(hour_steps)
+    df['Lag1d'] = df['LogLoad'].shift(24 * hour_steps)
+    df['Lag1w'] = df['LogLoad'].shift(7 * 24 * hour_steps)
+
+    df['Lag1h_Rmean1h'] = df['Lag1h'].rolling(hour_steps).mean()
+    df['Lag1d_Rmean1h'] = df['Lag1d'].rolling(hour_steps).mean()
+    df['Lag1w_Rmean1h'] = df['Lag1w'].rolling(hour_steps).mean()
+
+    df['Lag1h_Rmax1h'] = df['Lag1h'].rolling(hour_steps).max()
+    df['Lag1d_Rmax1h'] = df['Lag1d'].rolling(hour_steps).max()
+    df['Lag1w_Rmax1h'] = df['Lag1w'].rolling(hour_steps).max()
+    
+    # for forecasting
+    if clip_df:
+        df.drop(columns=['Load', 'LogLoad'], inplace=True)
+        df.dropna(inplace=True)
+        
+    return df
+
 def merge_dataframes(df_scada, df_temp=None, df_humidity=None):
     """
     Gộp dữ liệu scada với dữ liệu nhiệt độ, độ ẩm (nếu có)
@@ -88,8 +125,8 @@ def merge_dataframes(df_scada, df_temp=None, df_humidity=None):
     elif df_humidity is not None:
         df = df_humidity
     df = df.resample('5min').mean().interpolate()
-    return pd.merge(df, df_scada, how='inner', left_index=True, right_index=True)
-
+    return pd.merge(df_scada, df, how='left', left_index=True, right_index=True)
+    
 def get_holiday(t):
     """
     Trích xuất ngày nghỉ lễ từ date
@@ -133,33 +170,20 @@ def add_calendar_features(df, use_lunar=True, use_holiday=True):
         df['IsHoliday'] = (df['Holiday'] != 'No').astype(int)
     return df
 
-def prepare_data(df, hour_steps, use_temp=True, use_humidity=True, use_lunar=True, use_holiday=True):
+def prepare_data(df, train_flag=True, use_temp=True, use_humidity=True, use_lunar=True, use_holiday=True):
     """
     Chuẩn bị các feature để đưa vào mô hình
     """
-    df['LogLoad'] = np.log(df['Load'])
-    
-    # Lag features
-    df['Lag1h'] = df['LogLoad'].shift(hour_steps)
-    df['Lag1d'] = df['LogLoad'].shift(24 * hour_steps)
-    df['Lag1w'] = df['LogLoad'].shift(7 * 24 * hour_steps)
-
-    df['Lag1h_Rmean1h'] = df['Lag1h'].rolling(hour_steps).mean()
-    df['Lag1d_Rmean1h'] = df['Lag1d'].rolling(hour_steps).mean()
-    df['Lag1w_Rmean1h'] = df['Lag1w'].rolling(hour_steps).mean()
-
-    df['Lag1h_Rmax1h'] = df['Lag1h'].rolling(hour_steps).max()
-    df['Lag1d_Rmax1h'] = df['Lag1d'].rolling(hour_steps).max()
-    df['Lag1w_Rmax1h'] = df['Lag1w'].rolling(hour_steps).max()
-    
     # Features lists
     calendar_features = ['Hour', 'DayOfWeek', 'Month', 'DayOfYear', 'Weekend']
-    lag_features = ['Lag1h', 'Lag1d', 'Lag1w', 
-                    'Lag1h_Rmean1h', 'Lag1d_Rmean1h', 'Lag1w_Rmean1h', 
-                    'Lag1h_Rmax1h', 'Lag1d_Rmax1h', 'Lag1w_Rmax1h']
+    lag_features = [col for col in df if col.startswith('Lag')]
     humidity_features = []
     temperature_features = []
-    load_features = ['Load', 'LogLoad']
+    load_features = []
+    
+    # Target features
+    if train_flag:
+        load_features += ['Load', 'LogLoad']
     
     # Holiday
     if use_holiday:

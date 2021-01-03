@@ -7,22 +7,29 @@ from scada_forecast.metrics import ape, accuracy
 
 
 class WindowGenerator():
-    def __init__(self, input_width, label_width, shift, batch_size,
-                 train_df=None, val_df=None, test_df=None,
-                 label_columns=None):
+    def __init__(self, input_width, label_width, shift, batch_size, train_flag=True,
+                 train_df=None, val_df=None, test_df=None, label_columns=None):
         # Store the raw data.
         self.train_df = train_df
         self.val_df = val_df
         self.test_df = test_df
 
+        self.train_flag = train_flag
         # Work out the label column indices.
+        self.label_indices = None
         self.label_columns = label_columns
         if label_columns is not None:
             self.label_columns_indices = {name: i for i, name in
                                           enumerate(label_columns)}
-        self.column_indices = {name: i for i, name in
-                               enumerate(train_df.columns)}
-        self.column_dtype = {name: train_df[name].dtype for name in train_df.columns}
+            
+        if self.train_flag:
+            self.column_indices = {name: i for i, name in
+                                   enumerate(train_df.columns)}
+            self.column_dtype = {name: train_df[name].dtype for name in train_df.columns}
+        else: 
+            self.column_indices = {name: i for i, name in
+                                   enumerate(test_df.columns)}
+            self.column_dtype = {name: test_df[name].dtype for name in test_df.columns}
 
         # Work out the window parameters.
         self.input_width = input_width
@@ -34,9 +41,10 @@ class WindowGenerator():
         self.input_slice = slice(0, input_width)
         self.input_indices = np.arange(self.total_window_size)[self.input_slice]
 
-        self.label_start = self.total_window_size - self.label_width
-        self.labels_slice = slice(self.label_start, None)
-        self.label_indices = np.arange(self.total_window_size)[self.labels_slice]
+        if self.train_flag:
+            self.label_start = self.total_window_size - self.label_width
+            self.labels_slice = slice(self.label_start, None)
+            self.label_indices = np.arange(self.total_window_size)[self.labels_slice]
         
         self.batch_size = batch_size
 
@@ -49,22 +57,28 @@ class WindowGenerator():
     
     def split_window(self, features):
         inputs = features[:, self.input_slice, :]
-        labels = features[:, self.labels_slice, :]
-        if self.label_columns is not None:
-            labels = tf.stack(
-                [labels[:, :, self.column_indices[name]] for name in self.label_columns],
-                axis=-1)
+        labels = np.zeros(inputs.shape[0])
+        if self.train_flag:
+            labels = features[:, self.labels_slice, :]
+            if self.label_columns is not None:
+                labels = tf.stack(
+                    [labels[:, :, self.column_indices[name]] for name in self.label_columns],
+                    axis=-1)
 
         # Slicing doesn't preserve static shape information, so set the shapes
         # manually. This way the `tf.data.Datasets` are easier to inspect.
         inputs.set_shape([None, self.input_width, None])
-        labels.set_shape([None, self.label_width, None])
-
+        if self.train_flag:
+            labels.set_shape([None, self.label_width, None])
         return inputs, labels
     
     def array_to_dict(self, features, labels):
-        return {col_idx: tf.cast(features[:, :, col_val], self.column_dtype[col_idx]) 
-                for col_idx, col_val in self.column_indices.items()}, labels
+        features_dict = {col_idx: tf.cast(features[:, :, col_val], self.column_dtype[col_idx]) 
+                         for col_idx, col_val in self.column_indices.items()}
+        if self.train_flag:
+            return features_dict, labels
+        else:
+            return features_dict
     
     def make_dataset(self, data, shuffle):
         data = np.array(data, dtype=np.float32)
@@ -187,8 +201,8 @@ def train_model(df, input_width, n_val, n_test, hour_steps,
     train_df, val_df, test_df = split(df, chosen_categorical_cols, chosen_numeric_cols, target_col,
                                       input_width, shift, n_test, n_val, hour_steps)
     
-    window = WindowGenerator(input_width, label_width, shift, batch_size,
-                             train_df, val_df, test_df, [target_col])
+    window = WindowGenerator(input_width, label_width, shift, batch_size, train_flag=True,
+                             train_df=train_df, val_df=val_df, test_df=test_df, label_columns=[target_col])
     
     # model
     model = create_model(dtype_dict, categorical_unique_values_dict, 
@@ -224,9 +238,9 @@ def train_model(df, input_width, n_val, n_test, hour_steps,
     gc.collect();
     return val_loss,
 
-def inference(df, input_width, n_test, hour_steps, ckpt_path,
+def inference(df, input_width, ckpt_path,
               dtype_dict, categorical_unique_values_dict, 
-              chosen_features, categorical_cols, numeric_cols, target_col):
+              chosen_features, categorical_cols, numeric_cols):
     label_width = 1
     shift = 0
     lastest_load_column = 'Lag1h'
@@ -234,11 +248,8 @@ def inference(df, input_width, n_test, hour_steps, ckpt_path,
     chosen_categorical_cols = list(set.intersection(set(chosen_features), set(categorical_cols)))
     chosen_numeric_cols = list(set.intersection(set(chosen_features), set(numeric_cols)))
     
-    train_df, test_df = split(df, chosen_categorical_cols, chosen_numeric_cols, target_col,
-                              input_width, shift, n_test, n_val=None, hour_steps=hour_steps)
-    
-    window = WindowGenerator(input_width, label_width, shift, batch_size,
-                             train_df=train_df, val_df=None, test_df=test_df, label_columns=[target_col])
+    window = WindowGenerator(input_width, label_width=label_width, shift=shift, batch_size=batch_size, 
+                             train_flag=False, train_df=None, val_df=None, test_df=df, label_columns=None)
     
     # model
     model = create_model(dtype_dict, categorical_unique_values_dict, 
@@ -250,7 +261,7 @@ def inference(df, input_width, n_test, hour_steps, ckpt_path,
     # forecast
     forecast = np.exp(model.predict(window.test).squeeze())
     
-    forecast_df = test_df.iloc[-n_test:].copy()
+    forecast_df = df.iloc[-len(forecast):].copy()
     forecast_df['Forecast'] = forecast
     forecast_df = forecast_df[['Forecast']]
     return forecast_df
