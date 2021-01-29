@@ -13,6 +13,7 @@ def get_args():
     parser = argparse.ArgumentParser('Dự báo phụ tải SCADA trước 1 giờ')
     parser.add_argument('--task', type=str, default='train', help='train hay inference')
     parser.add_argument('--scada_path', type=str, default='data/scada/Dữ liệu SCADA Phụ tải 26.08.2020.xlsx', help='File excel scada')
+    parser.add_argument('--scada_sheet', type=str, default='SCADA_QGia', help='Chọn sheet cho file excel scada')
     parser.add_argument('--use_humidity', action='store_true', default=False, help='Có sử dụng dữ liệu độ ẩm hay không')
     parser.add_argument('--humidity_path', type=str, default='data/scada/DoAm.xlsx', help='File excel độ ẩm')
     parser.add_argument('--use_temperature', action='store_true', default=False, help='Có sử dụng dữ liệu nhiệt độ hay không')
@@ -48,7 +49,7 @@ def main(args):
     
     # TIEN XU LY
     print('Doc du lieu scada...')
-    df_scada = read_scada(args.scada_path)
+    df_scada = read_scada(args.scada_path, sheet_name=args.scada_sheet)
     if args.task == 'train':
         df_scada = get_lag_features(df_scada, hour_steps, clip_df=False)
     if args.task == 'inference':

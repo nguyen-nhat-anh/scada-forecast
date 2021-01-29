@@ -58,11 +58,11 @@ def interpolate_nan_and_outlier(df, column):
     _df[column] = _df[column].interpolate() # interpolate nan values
     return _df
 
-def read_scada(file_path):
+def read_scada(file_path, sheet_name='SCADA_QGia'):
     """
     Đọc dữ liệu phụ tải điện scada từ file excel
     """
-    df_scada = pd.read_excel(file_path, sheet_name='SCADA_QGia')
+    df_scada = pd.read_excel(file_path, sheet_name=sheet_name)
     minute_cols = [col for col in df_scada.columns if col not in ['Ngay', 'Gio']]
     df_scada = pd.melt(df_scada, id_vars=['Ngay', 'Gio'], value_vars=minute_cols, var_name='Phut', value_name='Load')
     df_scada['Date'] = df_scada.apply(create_date_col, axis=1)
